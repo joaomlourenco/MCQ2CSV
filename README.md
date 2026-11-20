@@ -9,8 +9,25 @@ questions A–D) into a CSV.
 python3 mcq2csv.py scans.pdf
 ```
 
-Needs Python 3 with `numpy` and `Pillow`, and poppler's `pdftoppm` for PDFs
-(`brew install poppler`). Several PDFs or page images can be given at once.
+Several PDFs or page images can be given at once.
+
+### Dependencies
+
+| Needs | For | Install |
+|---|---|---|
+| Python 3.8 or later | everything | python.org, or `brew install python` |
+| `numpy` | everything | `python3 -m pip install numpy` |
+| `Pillow` | everything | `python3 -m pip install Pillow` |
+| `pdftoppm` (poppler) | PDF input only; page images work without it | `brew install poppler` (macOS), `sudo apt install poppler-utils` (Debian/Ubuntu) |
+
+`review.py` needs nothing more. To see what is missing on a machine:
+
+```bash
+python3 mcq2csv.py --check
+```
+
+It lists each dependency as `ok` or `MISSING`, prints the commands to install what
+is missing (for the Python that ran it), and exits with 1 if anything is missing.
 
 Options:
 

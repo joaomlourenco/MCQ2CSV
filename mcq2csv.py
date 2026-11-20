@@ -10,18 +10,79 @@ settles them.  review.py serves a page for making those decisions.
 
 Usage:  python3 mcq2csv.py SCANS.pdf [more.pdf ...] [-o OUTDIR] [--roster inscritos.txt]
                          [--questions N] [--debug]
-Needs:  numpy, Pillow, and poppler's pdftoppm for PDF input.
+        python3 mcq2csv.py --check      (lists missing dependencies)
+Needs:  Python 3.8+, numpy, Pillow, and poppler's pdftoppm for PDF input.
 """
 import argparse
 import csv
+import importlib.util
 import itertools
+import platform
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw
+MIN_PYTHON = (3, 8)
+
+
+def check_dependencies():
+    """Print what this script needs and whether it is there; return the exit code."""
+    missing = []
+
+    def report(ok, what, detail, fix=None):
+        print(f"  {'ok     ' if ok else 'MISSING'}  {what:<10} {detail}")
+        if not ok:
+            missing.append(fix)
+
+    print(f"Python: {sys.executable}")
+    report(sys.version_info >= MIN_PYTHON, "Python", platform.python_version()
+           + ("" if sys.version_info >= MIN_PYTHON else f" (needs {'.'.join(map(str, MIN_PYTHON))} or later)"),
+           f"install Python {'.'.join(map(str, MIN_PYTHON))} or later")
+    def version_of(package):
+        try:
+            import importlib.metadata             # Python 3.8+; older ones fail the check above
+            return importlib.metadata.version(package)
+        except Exception:
+            return "installed"
+
+    for module, package in (("numpy", "numpy"), ("PIL", "Pillow")):
+        found = importlib.util.find_spec(module) is not None
+        report(found, package, version_of(package) if found else "not installed",
+               f"{sys.executable} -m pip install {package}")
+    pdftoppm = shutil.which("pdftoppm")
+    version = ""
+    if pdftoppm:
+        out = subprocess.run([pdftoppm, "-v"], capture_output=True, text=True)
+        version = (out.stderr or out.stdout).splitlines()[0] if (out.stderr or out.stdout) else ""
+    poppler_fix = {"Darwin": "brew install poppler",
+                   "Linux": "sudo apt install poppler-utils (or your distribution's poppler package)",
+                   }.get(platform.system(), "conda install -c conda-forge poppler")
+    report(bool(pdftoppm), "pdftoppm", f"{version} ({pdftoppm})" if pdftoppm
+           else "not found on PATH; needed for PDF input only (page images still work)",
+           poppler_fix)
+
+    if missing:
+        print("\nTo install what is missing:")
+        for fix in missing:
+            print(f"  {fix}")
+        return 1
+    print("\nEverything needed is installed.")
+    return 0
+
+
+# --check must work even when numpy or Pillow is missing, so it runs before
+# they are imported.
+if __name__ == "__main__" and "--check" in sys.argv[1:]:
+    sys.exit(check_dependencies())
+
+try:
+    import numpy as np
+    from PIL import Image, ImageDraw
+except ImportError as e:
+    package = {"PIL": "Pillow"}.get(e.name, e.name)
+    sys.exit(f"{package} is not installed. Run  python3 {Path(__file__).name} --check  to see what is missing.")
 
 DPI = 200
 PAGE_W, PAGE_H = 1654, 2339        # A4 in pixels at 200 dpi
@@ -75,6 +136,8 @@ def load_pages(path, tmp):
     path = Path(path)
     if path.suffix.lower() == ".pdf":
         prefix = Path(tmp) / path.stem
+        if not shutil.which("pdftoppm"):
+            sys.exit(f"pdftoppm (poppler) is needed to read PDFs. Run  python3 {Path(__file__).name} --check")
         subprocess.run(["pdftoppm", "-r", str(DPI), "-gray", str(path), str(prefix)], check=True)
         files = sorted(Path(tmp).glob(path.stem + "-*.pgm"))
     else:
@@ -520,6 +583,7 @@ def main():
     ap.add_argument("--questions", type=question_count, metavar="N",
                     help=f"number of questions, 1-{MAX_Q} (default: counted on the first sheet)")
     ap.add_argument("--debug", action="store_true", help="save each page with what was detected")
+    ap.add_argument("--check", action="store_true", help="list missing dependencies and exit")
     args = ap.parse_args()
     roster = load_roster(args.roster) if args.roster else None
 
