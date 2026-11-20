@@ -13,21 +13,45 @@ Several PDFs or page images can be given at once.
 
 ### Dependencies
 
-| Needs | For | Install |
-|---|---|---|
-| Python 3.8 or later | everything | python.org, or `brew install python` |
-| `numpy` | everything | `python3 -m pip install numpy` |
-| `Pillow` | everything | `python3 -m pip install Pillow` |
-| `pdftoppm` (poppler) | PDF input only; page images work without it | `brew install poppler` (macOS), `sudo apt install poppler-utils` (Debian/Ubuntu) |
+| Needs | For |
+|---|---|
+| Python 3.8 or later | everything |
+| `numpy`, `Pillow` | everything |
+| a PDF reader: poppler's `pdftoppm`, or the `pypdfium2` package | PDF input only; page images work without one. `pdftoppm` is used when both are there |
 
-`review.py` needs nothing more. To see what is missing on a machine:
+`review.py` needs nothing more. To see what is missing, and to install it:
 
 ```bash
 python3 mcq2csv.py --check
+python3 mcq2csv.py --install
 ```
 
-It lists each dependency as `ok` or `MISSING`, prints the commands to install what
-is missing (for the Python that ran it), and exits with 1 if anything is missing.
+`--check` lists each item as `ok` or `MISSING` and exits with 1 if anything is
+missing. `--install` shows the commands it would run for what is missing, asks
+before running each one, and checks again at the end:
+
+| System | numpy, Pillow | PDF reader |
+|---|---|---|
+| macOS, Homebrew's Python | `brew install numpy pillow` | `brew install poppler` |
+| macOS, other Python (python.org, venv) | `pip install` | `brew install poppler`, or `pypdfium2` from pip without Homebrew |
+| Linux, the distribution's Python | `apt-get`, `dnf`, `pacman` or `zypper` | `poppler-utils` (or `poppler`) from the same manager |
+| Linux, a virtual environment | `pip install` | poppler from the package manager |
+| Windows | `pip install` | `pypdfium2` from pip (no separate program to install) |
+
+pip always installs into the Python that ran the script. Homebrew's and the Linux
+distributions' own Pythons refuse pip, so their package manager is used instead.
+
+### Windows
+
+1. Install Python from python.org, or with `winget install Python.Python.3.13`.
+2. In a terminal in this folder: `py mcq2csv.py --install`, then answer `y`.
+3. Use `py` wherever this README says `python3`, e.g. `py mcq2csv.py scans.pdf`
+   and `py review.py`.
+
+The CSV files are UTF-8 with a byte-order mark, so Excel shows accented names
+correctly. Windows cannot write a file that is open in Excel: close the CSV files
+before running `mcq2csv.py`, and if a click on the review page reports a file as
+open, close it and click again.
 
 Options:
 

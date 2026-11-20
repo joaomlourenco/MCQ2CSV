@@ -11,78 +11,39 @@ settles them.  review.py serves a page for making those decisions.
 Usage:  python3 mcq2csv.py SCANS.pdf [more.pdf ...] [-o OUTDIR] [--roster inscritos.txt]
                          [--questions N] [--debug]
         python3 mcq2csv.py --check      (lists missing dependencies)
-Needs:  Python 3.8+, numpy, Pillow, and poppler's pdftoppm for PDF input.
+        python3 mcq2csv.py --install    (offers to install them)
+(On Windows, type  py  instead of  python3.)
+Needs:  Python 3.8+, numpy, Pillow, and for PDF input poppler's pdftoppm or pypdfium2.
 """
 import argparse
 import csv
-import importlib.util
 import itertools
-import platform
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-MIN_PYTHON = (3, 8)
+import dependencies
+from dependencies import PYTHON
 
-
-def check_dependencies():
-    """Print what this script needs and whether it is there; return the exit code."""
-    missing = []
-
-    def report(ok, what, detail, fix=None):
-        print(f"  {'ok     ' if ok else 'MISSING'}  {what:<10} {detail}")
-        if not ok:
-            missing.append(fix)
-
-    print(f"Python: {sys.executable}")
-    report(sys.version_info >= MIN_PYTHON, "Python", platform.python_version()
-           + ("" if sys.version_info >= MIN_PYTHON else f" (needs {'.'.join(map(str, MIN_PYTHON))} or later)"),
-           f"install Python {'.'.join(map(str, MIN_PYTHON))} or later")
-    def version_of(package):
-        try:
-            import importlib.metadata             # Python 3.8+; older ones fail the check above
-            return importlib.metadata.version(package)
-        except Exception:
-            return "installed"
-
-    for module, package in (("numpy", "numpy"), ("PIL", "Pillow")):
-        found = importlib.util.find_spec(module) is not None
-        report(found, package, version_of(package) if found else "not installed",
-               f"{sys.executable} -m pip install {package}")
-    pdftoppm = shutil.which("pdftoppm")
-    version = ""
-    if pdftoppm:
-        out = subprocess.run([pdftoppm, "-v"], capture_output=True, text=True)
-        version = (out.stderr or out.stdout).splitlines()[0] if (out.stderr or out.stdout) else ""
-    poppler_fix = {"Darwin": "brew install poppler",
-                   "Linux": "sudo apt install poppler-utils (or your distribution's poppler package)",
-                   }.get(platform.system(), "conda install -c conda-forge poppler")
-    report(bool(pdftoppm), "pdftoppm", f"{version} ({pdftoppm})" if pdftoppm
-           else "not found on PATH; needed for PDF input only (page images still work)",
-           poppler_fix)
-
-    if missing:
-        print("\nTo install what is missing:")
-        for fix in missing:
-            print(f"  {fix}")
-        return 1
-    print("\nEverything needed is installed.")
-    return 0
-
-
-# --check must work even when numpy or Pillow is missing, so it runs before
-# they are imported.
+# --check and --install must work even when numpy or Pillow is missing, so
+# they run before those are imported.
 if __name__ == "__main__" and "--check" in sys.argv[1:]:
-    sys.exit(check_dependencies())
+    sys.exit(dependencies.check())
+if __name__ == "__main__" and "--install" in sys.argv[1:]:
+    sys.exit(dependencies.install())
 
 try:
     import numpy as np
     from PIL import Image, ImageDraw
 except ImportError as e:
     package = {"PIL": "Pillow"}.get(e.name, e.name)
-    sys.exit(f"{package} is not installed. Run  python3 {Path(__file__).name} --check  to see what is missing.")
+    sys.exit(f"{package} is not installed. Run  {PYTHON} {Path(__file__).name} --install  to install it.")
+
+# UTF-8 with a byte-order mark: accented names survive on every system, and
+# Excel on Windows opens the files with the right characters.
+CSV_ENCODING = "utf-8-sig"
 
 DPI = 200
 PAGE_W, PAGE_H = 1654, 2339        # A4 in pixels at 200 dpi
@@ -131,19 +92,37 @@ NBINS = 16
 
 # ---------------------------------------------------------------- input
 
+def pdf_images(path, tmp):
+    """Each page of a PDF as a greyscale image at DPI, with pdftoppm or else pypdfium2."""
+    if shutil.which("pdftoppm"):
+        prefix = Path(tmp) / path.stem
+        subprocess.run(["pdftoppm", "-r", str(DPI), "-gray", str(path), str(prefix)], check=True)
+        for f in sorted(Path(tmp).glob(path.stem + "-*.pgm")):
+            with Image.open(f) as im:
+                yield im.convert("L")
+        return
+    try:
+        import pypdfium2
+    except ImportError:
+        sys.exit(f"Reading PDFs needs poppler's pdftoppm or pypdfium2. "
+                 f"Run  {PYTHON} {Path(__file__).name} --install")
+    pdf = pypdfium2.PdfDocument(str(path))
+    try:
+        for page in pdf:
+            yield page.render(scale=DPI / 72, grayscale=True).to_pil().convert("L")
+    finally:
+        pdf.close()
+
+
 def load_pages(path, tmp):
     """Yield (page number, greyscale array) for a PDF or an image file."""
     path = Path(path)
     if path.suffix.lower() == ".pdf":
-        prefix = Path(tmp) / path.stem
-        if not shutil.which("pdftoppm"):
-            sys.exit(f"pdftoppm (poppler) is needed to read PDFs. Run  python3 {Path(__file__).name} --check")
-        subprocess.run(["pdftoppm", "-r", str(DPI), "-gray", str(path), str(prefix)], check=True)
-        files = sorted(Path(tmp).glob(path.stem + "-*.pgm"))
+        images = pdf_images(path, tmp)
     else:
-        files = [path]
-    for n, f in enumerate(files, 1):
-        im = Image.open(f).convert("L")
+        with Image.open(path) as im:
+            images = [im.convert("L")]
+    for n, im in enumerate(images, 1):
         if im.width != PAGE_W:                   # near the reference size; the squares do the rest
             im = im.resize((PAGE_W, round(im.height * PAGE_W / im.width)), Image.LANCZOS)
         yield n, np.asarray(im, dtype=float)
@@ -516,7 +495,7 @@ def debug_image(page, qs, ver, stu, path):
 def load_overrides(path):
     out = {}
     if path.exists():
-        with path.open(newline="") as f:
+        with path.open(newline="", encoding=CSV_ENCODING) as f:
             for row in csv.DictReader(r for r in f if r.strip() and not r.startswith("#")):
                 value = (row.get("value") or "").strip().upper()
                 out[(row["sheet"].strip(), row["field"].strip())] = "" if value in ("", "-") else value
@@ -584,6 +563,7 @@ def main():
                     help=f"number of questions, 1-{MAX_Q} (default: counted on the first sheet)")
     ap.add_argument("--debug", action="store_true", help="save each page with what was detected")
     ap.add_argument("--check", action="store_true", help="list missing dependencies and exit")
+    ap.add_argument("--install", action="store_true", help="offer to install missing dependencies")
     args = ap.parse_args()
     roster = load_roster(args.roster) if args.roster else None
 
@@ -691,10 +671,14 @@ def main():
         print(f"{sheet}: student {row['student']}, {pending} to review", file=sys.stderr)
 
     def write(name, rows, cols):
-        with (out / name).open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=cols)
-            w.writeheader()
-            w.writerows(rows)
+        try:
+            with (out / name).open("w", newline="", encoding=CSV_ENCODING) as f:
+                w = csv.DictWriter(f, fieldnames=cols)
+                w.writeheader()
+                w.writerows(rows)
+        except PermissionError:
+            sys.exit(f"Cannot write {out / name}: it is open in another program (Excel?). "
+                     "Close it and run again.")
 
     if fields is None:
         fields = field_names(nq or 0)
@@ -720,7 +704,7 @@ def main():
           file=sys.stderr)
     if pending:
         extra = "" if ov_path == out.parent / "overrides.csv" else f" --overrides {ov_path}"
-        print(f"decide them with:  python3 {Path(__file__).parent / 'review.py'} {out}{extra}",
+        print(f"decide them with:  {PYTHON} {Path(__file__).parent / 'review.py'} {out}{extra}",
               file=sys.stderr)
 
 

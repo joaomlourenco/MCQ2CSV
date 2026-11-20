@@ -12,6 +12,7 @@ answers as toggles.  Each click is saved at once:
 Clicking the selected toggle again takes the decision back.
 
 Usage:  python3 review.py [OUTDIR] [--overrides FILE] [--port 8765] [--no-browser]
+        (on Windows, type  py  instead of  python3)
 """
 import argparse
 import csv
@@ -22,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from mcq2csv import DECISION_COLS, REVIEW_COLS
+from mcq2csv import CSV_ENCODING, DECISION_COLS, REVIEW_COLS
 
 NO_ANSWER = "-"
 
@@ -38,13 +39,13 @@ def options(field):
 def read_csv(path):
     if not path.exists():
         return []
-    with path.open(newline="") as f:
+    with path.open(newline="", encoding=CSV_ENCODING) as f:
         return list(csv.DictReader(f))
 
 
 def write_csv(path, rows, cols):
     tmp = path.with_suffix(".tmp")
-    with tmp.open("w", newline="") as f:
+    with tmp.open("w", newline="", encoding=CSV_ENCODING) as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
@@ -74,6 +75,7 @@ class Store:
             if opts is None and not re.fullmatch(r"\d{5}", value):
                 raise ValueError("the student number has 5 digits")
 
+        self.check_writable()
         review = read_csv(self.review_path)
         case = next((r for r in review if r["sheet"] == sheet and r["field"] == field), None)
         if case is None:
@@ -81,7 +83,7 @@ class Store:
         case["decision"] = value
 
         answers = read_csv(self.out / "answers.csv")
-        with (self.out / "answers.csv").open(newline="") as f:
+        with (self.out / "answers.csv").open(newline="", encoding=CSV_ENCODING) as f:
             answer_cols = next(csv.reader(f))         # the question count varies by form
         row = next(r for r in answers if r["sheet"] == sheet)
         old_student = row["student"]
@@ -116,11 +118,26 @@ class Store:
                             else "Saved, but this number is not on the class list.")
         return case
 
+    def check_writable(self):
+        """Fail before writing anything if a file is locked, so no click is half saved.
+
+        On Windows a CSV file open in Excel cannot be written.
+        """
+        for path in (self.out / "answers.csv", self.out / "decisions.csv", self.review_path,
+                     self.ov_path):
+            if path.exists():
+                try:
+                    with path.open("a"):
+                        pass
+                except PermissionError:
+                    raise PermissionError(f"{path.name} is open in another program (Excel?). "
+                                          "Close it and click again.") from None
+
     def save_override(self, sheet, student, field, value):
         """Replace this field's line in overrides.csv, keeping comments and other lines."""
         lines = []
         if self.ov_path.exists():
-            with self.ov_path.open(newline="") as f:
+            with self.ov_path.open(newline="", encoding=CSV_ENCODING) as f:
                 lines = list(csv.reader(f))
         if not lines:
             lines = [["sheet", "field", "value", "note"]]
@@ -130,7 +147,7 @@ class Store:
         if value:
             kept.append([sheet, field, value, "review page"])
         tmp = self.ov_path.with_suffix(".tmp")
-        with tmp.open("w", newline="") as f:
+        with tmp.open("w", newline="", encoding=CSV_ENCODING) as f:
             csv.writer(f).writerows(kept)
         tmp.replace(self.ov_path)
 
@@ -170,6 +187,8 @@ def make_handler(store):
                 self.send(200, json.dumps(case))
             except (ValueError, KeyError) as e:
                 self.send(400, json.dumps({"error": e.args[0]}))
+            except PermissionError as e:
+                self.send(409, json.dumps({"error": str(e)}))
 
         def log_message(self, *args):
             pass
