@@ -1,0 +1,7 @@
+# Only the code and its documentation are tracked. Scans, class lists,
+# overrides and everything under out/ hold student data and stay local.
+*
+!.gitignore
+!README.md
+!mcq2csv.py
+!review.py
